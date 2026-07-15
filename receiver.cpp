@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -24,11 +25,20 @@ void push_frame(uint32_t seq, const uint8_t* data) {
 
 int main() {
     int listen_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (listen_sock < 0) return 1;
+
+    int opt = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
     struct sockaddr_in local_addr = {0};
     local_addr.sin_family = AF_INET;
     local_addr.sin_port = htons(47002);
     local_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    bind(listen_sock, (struct sockaddr *)&local_addr, sizeof(local_addr));
+    
+    if (::bind(listen_sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+        perror("receiver failed to bind port 47002");
+        return 1;
+    }
 
     player_sock = socket(AF_INET, SOCK_DGRAM, 0);
     memset(&player_addr, 0, sizeof(player_addr));
@@ -41,9 +51,12 @@ int main() {
 
     while (true) {
         ssize_t bytes = recvfrom(listen_sock, buffer, sizeof(buffer), 0, nullptr, nullptr);
-        if (bytes < 324) continue;
+        if (bytes < 164) continue;
 
-        uint32_t seq = ntohl(*(uint32_t*)buffer);
+        uint32_t seq;
+        memcpy(&seq, buffer, 4);
+        seq = ntohl(seq);
+
         if (seq > top_seq) top_seq = seq;
 
         queue<uint32_t> dirty_nodes;
@@ -54,8 +67,7 @@ int main() {
             dirty_nodes.push(seq + 1);
             dirty_nodes.push(seq + 3);
         }
-
-        if (!parity_data.count(seq)) {
+        if (bytes == 324 && !parity_data.count(seq)) {
             parity_data[seq] = vector<uint8_t>(buffer + 164, buffer + 324);
             dirty_nodes.push(seq);
         }
