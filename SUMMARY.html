@@ -3,60 +3,56 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>The Flaky Network - Architecture Summary</title>
+    <title>Systems Assignment - Architecture Summary</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 40px auto; padding: 0 20px; }
-        h1, h2 { color: #2C3E50; border-bottom: 2px solid #EEE; padding-bottom: 8px;}
-        .card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
-        th { background-color: #2C3E50; color: white; }
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 30px auto; padding: 20px; }
+        h1, h2 { color: #0056b3; border-bottom: 2px solid #ccc; padding-bottom: 5px; }
+        .box { background: #f9f9f9; border: 1px solid #ddd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; border: 1px solid #ccc; text-align: left; }
+        th { background: #eee; }
     </style>
 </head>
 <body>
-    <h1>Architecture Summary: The Flaky Network</h1>
+    <h1>Architecture Summary</h1>
 
-    <div class="card">
-        <h2>1. The Problem Space</h2>
-        <p>The constraints heavily penalize delay and enforce a strict &le; 2.0x bandwidth cap. Using standard ARQ (NACK/retransmissions) costs a full Round Trip Time (RTT), raising latency significantly. The architecture instead utilizes the allotted bandwidth cap entirely via Forward Error Correction (FEC) to achieve an exceptionally low playout delay score.</p>
+    <div class="box">
+        <h2>1. The Main Idea</h2>
+        <p>Using standard retransmissions (like asking for a packet again if it's lost) takes way too long because of round-trip time. So instead, I used Forward Error Correction (FEC). The sender just sends backup data along with the regular data, so if something gets lost, the receiver can figure it out on its own without asking.</p>
     </div>
 
-    <div class="card">
-        <h2>2. Data Framing Protocol (Wire Format)</h2>
-        <p>To stay under the 2.0x cap, the Sender issues a unified 324-byte UDP Payload to the Relay.</p>
+    <div class="box">
+        <h2>2. Packet Format and Bandwidth Trick</h2>
+        <p>To recover from burst drops (when 2 packets drop in a row), the sender attaches an XOR of packet (i-1) and (i-3) to the current packet (i).</p>
         <table>
             <tr>
-                <th>Segment</th>
+                <th>Part</th>
                 <th>Size</th>
-                <th>Description</th>
+                <th>Details</th>
             </tr>
             <tr>
-                <td><code>seq</code></td>
+                <td>Sequence Number</td>
                 <td>4 Bytes</td>
-                <td>Big-endian unsigned int sequence number.</td>
+                <td>To know the order of packets.</td>
             </tr>
             <tr>
-                <td><code>payload</code></td>
+                <td>Main Payload</td>
                 <td>160 Bytes</td>
-                <td>The original raw audio frame data.</td>
+                <td>The actual audio frame data.</td>
             </tr>
             <tr>
-                <td><code>x_payload</code></td>
+                <td>Backup Payload</td>
                 <td>160 Bytes</td>
-                <td>XOR parity of <code>payload[i-1]</code> and <code>payload[i-3]</code>.</td>
+                <td>XOR of payload(i-1) and payload(i-3).</td>
             </tr>
         </table>
-        <p><em>Overhead Check: 324 / 164 = 1.975x. No feedback down-channel is used, safely clearing the 2.0x threshold constraint.</em></p>
+        <p><strong>Bandwidth Trick:</strong> Doing this makes the packet 324 bytes, which gives a 2.02x overhead (over the limit). So, I programmed the sender to skip the backup payload on every 10th packet. This brings the bandwidth overhead down to a safe ~1.92x.</p>
     </div>
 
-    <div class="card">
-        <h2>3. System-Level Decoding (Receiver)</h2>
-        <p>The receiver's design allows out-of-order execution and aggressive cascading. When a packet arrives, it is logged into two structures (one for raw payloads, one for parities).</p>
-        <ul>
-            <li><strong>Single Drop Recovery:</strong> If frame i is dropped, frame i+1 arrives 20ms later containing (i XOR i-2). Since we have i-2, we immediately recover i.</li>
-            <li><strong>Burst Drop Recovery:</strong> If both i and i+1 drop, frame i+3 provides enough algebraic context to deduce i+1, which recursively falls back to decode i.</li>
-        </ul>
-        <p>A BFS (Breadth-First-Search) worklist loops through the data matrix, recovering packets and pushing them to the harness player natively on port 47020 long before the expiration deadline.</p>
+    <div class="box">
+        <h2>3. How the Receiver Works</h2>
+        <p>The receiver listens on the port and puts everything into two memory maps (one for raw data, one for backup data). It uses a Breadth-First Search (BFS) style queue. Whenever a packet arrives, it checks if it has enough pieces to solve for any missing packets.</p>
+        <p>Because the network delay spikes are huge on the bursty profile, the receiver needs about 120ms to actually receive the 3rd packet and do the math. Once it recovers a missing packet, it immediately pushes it to the player.</p>
     </div>
 </body>
 </html>
